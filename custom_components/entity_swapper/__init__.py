@@ -10,6 +10,7 @@ from homeassistant.components.frontend import (
     async_register_built_in_panel,
     async_remove_panel,
 )
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -29,10 +30,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Entity Swapper from a config entry."""
     # Serve the frontend panel JS
-    hass.http.register_static_path(
-        "/entity_swapper",
-        FRONTEND_DIR,
-        cache_headers=False,
+    await hass.http.async_register_static_paths(
+        [StaticPathConfig("/entity_swapper", FRONTEND_DIR, cache_headers=False)]
     )
 
     # Register the sidebar panel
