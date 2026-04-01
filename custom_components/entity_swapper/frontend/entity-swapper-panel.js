@@ -67,6 +67,9 @@ class EntitySwapperPanel extends HTMLElement {
         font-size: 14px; color: var(--secondary-text-color, #727272);
         text-align: center; margin: 0 0 36px; line-height: 1.5;
     }
+    .subtitle small {
+        font-size: 12px; opacity: 0.7; display: block; margin-top: 4px;
+    }
     .row {
         display: flex; align-items: center;
         gap: 16px; margin-bottom: 28px;
@@ -153,6 +156,7 @@ class EntitySwapperPanel extends HTMLElement {
     .step.success .step-icon { color: #4caf50; }
     .step.warning .step-icon { color: #ff9800; }
     .step.error .step-icon   { color: #f44336; }
+    .step.info .step-icon     { color: #2196f3; }
     .step-text {
         font-family: "Roboto Mono", "SF Mono", Consolas, monospace;
         font-size: 12.5px; word-break: break-all;
@@ -218,9 +222,10 @@ class EntitySwapperPanel extends HTMLElement {
 <div class="card">
     <h1>Entity Swapper</h1>
     <p class="subtitle">
-        Remplacez une entit\u00e9 d\u00e9fectueuse par une nouvelle.
+        Remplacez une entit\u00e9 d\u00e9fectueuse par une nouvelle.<br>
         La nouvelle entit\u00e9 prendra l\u2019identifiant de l\u2019ancienne,
-        pr\u00e9servant toutes vos automatisations et scripts.
+        pr\u00e9servant toutes vos automatisations et scripts.<br>
+        <small>L\u2019ancienne entit\u00e9 peut avoir \u00e9t\u00e9 supprim\u00e9e (appareil retir\u00e9). Tapez son ID manuellement si besoin.</small>
     </p>
     <div class="row">
         <div class="col" id="col-old">
@@ -398,7 +403,7 @@ class EntitySwapperPanel extends HTMLElement {
                 row.className = "step " + s.status;
                 const icon = document.createElement("span");
                 icon.className = "step-icon";
-                icon.textContent = s.status === "success" ? "\u2713" : s.status === "warning" ? "\u26a0" : "\u2717";
+                icon.textContent = s.status === "success" ? "\u2713" : s.status === "warning" ? "\u26a0" : s.status === "info" ? "\u2139" : "\u2717";
                 row.appendChild(icon);
                 const body = document.createElement("div");
                 const txt = document.createElement("div");

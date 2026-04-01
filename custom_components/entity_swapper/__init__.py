@@ -141,47 +141,59 @@ async def ws_swap_entities(
 
     registry = er.async_get(hass)
 
-    old_entry = registry.async_get(old_entity_id)
-    if not old_entry:
-        connection.send_error(
-            msg["id"],
-            "not_found",
-            f"L'entité '{old_entity_id}' n'existe pas dans le registre. "
-            f"Seules les entités enregistrées peuvent être échangées.",
-        )
-        return
-
     new_entry = registry.async_get(new_entity_id)
     if not new_entry:
         connection.send_error(
             msg["id"],
             "not_found",
-            f"L'entité '{new_entity_id}' n'existe pas dans le registre. "
-            f"Seules les entités enregistrées peuvent être échangées.",
+            f"L'entité '{new_entity_id}' n'est pas dans le registre. "
+            f"Seules les entités créées par une intégration (avec un unique_id) "
+            f"peuvent être renommées. Les entités YAML sans unique_id ne sont pas supportées.",
         )
         return
 
+    old_entry = registry.async_get(old_entity_id)
     steps = []
+    final_old_id = None
 
-    # --- Step 1: old_entity → _old ---
-    final_old_id = _find_available_id(registry, old_entity_id, "old")
-
-    try:
-        registry.async_update_entity(old_entity_id, new_entity_id=final_old_id)
-        steps.append(
-            {
-                "action": f"{old_entity_id}  →  {final_old_id}",
-                "status": "success",
-                "detail": "Ancienne entité renommée avec suffixe _old",
-            }
-        )
-    except Exception as exc:
+    if old_entry:
+        # --- Step 1: old_entity → _old ---
+        final_old_id = _find_available_id(registry, old_entity_id, "old")
+        try:
+            registry.async_update_entity(old_entity_id, new_entity_id=final_old_id)
+            steps.append(
+                {
+                    "action": f"{old_entity_id}  →  {final_old_id}",
+                    "status": "success",
+                    "detail": "Ancienne entité renommée avec suffixe _old",
+                }
+            )
+        except Exception as exc:
+            connection.send_error(
+                msg["id"],
+                "rename_failed",
+                f"Impossible de renommer '{old_entity_id}' : {exc}",
+            )
+            return
+    elif hass.states.get(old_entity_id):
+        # Entity exists in states but not in registry (no unique_id)
         connection.send_error(
             msg["id"],
-            "rename_failed",
-            f"Impossible de renommer '{old_entity_id}' : {exc}",
+            "not_in_registry",
+            f"L'entité '{old_entity_id}' existe mais n'est pas dans le registre "
+            f"(pas de unique_id). Supprimez-la d'abord ou utilisez une entité "
+            f"issue d'une intégration.",
         )
         return
+    else:
+        # Old entity is completely gone — ID is free
+        steps.append(
+            {
+                "action": f"{old_entity_id} n'existe plus",
+                "status": "info",
+                "detail": "L'identifiant est libre, pas besoin de le libérer",
+            }
+        )
 
     # --- Step 2: new_entity → old_entity_id ---
     try:
@@ -229,7 +241,7 @@ async def ws_swap_entities(
         "timestamp": time.time(),
         "original_entity_id": old_entity_id,
         "new_device_original_id": new_entity_id,
-        "old_renamed_to": final_old_id,
+        "old_renamed_to": final_old_id,  # None if old entity was already gone
     }
     history = _load_history(hass)
     history.insert(0, record)
@@ -284,7 +296,7 @@ async def ws_swap_revert(
 
     registry = er.async_get(hass)
     original_id = record["original_entity_id"]
-    old_renamed_to = record["old_renamed_to"]
+    old_renamed_to = record.get("old_renamed_to")  # None if old entity was already gone
     steps = []
 
     # Step 1: current holder of original_id → temp
@@ -292,43 +304,46 @@ async def ws_swap_revert(
     if not current_holder:
         connection.send_error(
             msg["id"], "not_found",
-            f"L'entit\u00e9 '{original_id}' n'existe plus dans le registre."
+            f"L'entité '{original_id}' n'existe plus dans le registre."
         )
         return
 
     temp_id = _find_available_id(registry, original_id, "revert_temp")
     try:
         registry.async_update_entity(original_id, new_entity_id=temp_id)
-        steps.append({"action": f"{original_id}  \u2192  {temp_id}", "status": "success", "detail": "Entit\u00e9 actuelle d\u00e9plac\u00e9e temporairement"})
+        steps.append({"action": f"{original_id}  →  {temp_id}", "status": "success", "detail": "Entité actuelle déplacée temporairement"})
     except Exception as exc:
-        connection.send_error(msg["id"], "rename_failed", f"Impossible de d\u00e9placer '{original_id}' : {exc}")
+        connection.send_error(msg["id"], "rename_failed", f"Impossible de déplacer '{original_id}' : {exc}")
         return
 
-    # Step 2: old_renamed_to → original_id (restore old entity)
-    old_entry = registry.async_get(old_renamed_to)
-    if old_entry:
-        try:
-            registry.async_update_entity(old_renamed_to, new_entity_id=original_id)
-            steps.append({"action": f"{old_renamed_to}  \u2192  {original_id}", "status": "success", "detail": "Ancienne entit\u00e9 restaur\u00e9e"})
-        except Exception as exc:
-            # Rollback step 1
+    # Step 2: old_renamed_to → original_id (restore old entity, if it was renamed)
+    if old_renamed_to:
+        old_entry = registry.async_get(old_renamed_to)
+        if old_entry:
             try:
-                registry.async_update_entity(temp_id, new_entity_id=original_id)
-            except Exception:
-                pass
-            connection.send_error(msg["id"], "rename_failed", f"Impossible de restaurer '{old_renamed_to}' : {exc}")
-            return
+                registry.async_update_entity(old_renamed_to, new_entity_id=original_id)
+                steps.append({"action": f"{old_renamed_to}  →  {original_id}", "status": "success", "detail": "Ancienne entité restaurée"})
+            except Exception as exc:
+                # Rollback step 1
+                try:
+                    registry.async_update_entity(temp_id, new_entity_id=original_id)
+                except Exception:
+                    pass
+                connection.send_error(msg["id"], "rename_failed", f"Impossible de restaurer '{old_renamed_to}' : {exc}")
+                return
+        else:
+            steps.append({"action": f"{old_renamed_to} introuvable", "status": "warning", "detail": "L'ancienne entité n'existe plus, seul le nouveau dispositif est remis à son ID d'origine"})
     else:
-        steps.append({"action": f"{old_renamed_to} introuvable", "status": "warning", "detail": "L'ancienne entit\u00e9 n'existe plus, seul le nouveau dispositif est remis \u00e0 son ID d'origine"})
+        steps.append({"action": "Ancienne entité absente", "status": "info", "detail": "L'ancienne entité n'existait plus lors du swap, rien à restaurer"})
 
     # Step 3: temp → new_device_original_id (restore new device to its original name)
     new_orig = record["new_device_original_id"]
     target_id = new_orig if not registry.async_get(new_orig) else _find_available_id(registry, new_orig, "restored")
     try:
         registry.async_update_entity(temp_id, new_entity_id=target_id)
-        steps.append({"action": f"{temp_id}  \u2192  {target_id}", "status": "success", "detail": "Nouveau dispositif remis \u00e0 son ID d'origine"})
+        steps.append({"action": f"{temp_id}  →  {target_id}", "status": "success", "detail": "Nouveau dispositif remis à son ID d'origine"})
     except Exception as exc:
-        steps.append({"action": f"{temp_id}  \u2192  {target_id}", "status": "warning", "detail": f"\u00c9chec : {exc}"})
+        steps.append({"action": f"{temp_id}  →  {target_id}", "status": "warning", "detail": f"Échec : {exc}"})
 
     # Remove from history
     history = [r for r in history if r["id"] != swap_id]
