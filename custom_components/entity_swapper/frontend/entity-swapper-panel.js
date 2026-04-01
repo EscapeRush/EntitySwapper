@@ -3,17 +3,59 @@
  * Uses LitElement so ha-entity-picker works natively.
  */
 
-const LitElement = customElements.get("hui-masonry-view")
-    ? Object.getPrototypeOf(customElements.get("hui-masonry-view"))
-    : customElements.get("hui-view")
-        ? Object.getPrototypeOf(customElements.get("hui-view"))
-        : Object.getPrototypeOf(
-              customElements.get("hc-lovelace") || customElements.get("hui-error-card")
-          );
+function findLitBase() {
+    const candidates = [
+        "ha-panel-lovelace",
+        "hui-masonry-view",
+        "hui-view",
+        "hc-lovelace",
+        "hui-error-card",
+        "ha-config-dashboard",
+        "ha-panel-config",
+        "ha-panel-developer-tools",
+    ];
+    for (const tag of candidates) {
+        const el = customElements.get(tag);
+        if (el) {
+            const base = Object.getPrototypeOf(el);
+            if (base && base.prototype && base.prototype.html) return base;
+        }
+    }
+    return null;
+}
 
-const { html, css } = LitElement.prototype.constructor;
+async function loadAndDefine() {
+    let base = findLitBase();
 
-class EntitySwapperPanel extends LitElement {
+    if (!base) {
+        // Force-load card helpers which registers many Lit components
+        try {
+            if (window.loadCardHelpers) await window.loadCardHelpers();
+        } catch (_) {}
+        base = findLitBase();
+    }
+
+    if (!base) {
+        // Last resort: wait for any Lit element to appear
+        await new Promise((resolve) => {
+            const observer = new MutationObserver(() => {
+                base = findLitBase();
+                if (base) { observer.disconnect(); resolve(); }
+            });
+            observer.observe(document.documentElement, { childList: true, subtree: true });
+            setTimeout(() => { observer.disconnect(); resolve(); }, 5000);
+        });
+        if (!base) base = findLitBase();
+    }
+
+    if (!base) {
+        console.error("Entity Swapper: could not find LitElement base class");
+        return;
+    }
+
+    const { html, css } = base.prototype.constructor;
+
+    class EntitySwapperPanel extends base {
     static get properties() {
         return {
             hass: { type: Object },
@@ -400,4 +442,7 @@ class EntitySwapperPanel extends LitElement {
     }
 }
 
-customElements.define("entity-swapper-panel", EntitySwapperPanel);
+    customElements.define("entity-swapper-panel", EntitySwapperPanel);
+}
+
+loadAndDefine();
