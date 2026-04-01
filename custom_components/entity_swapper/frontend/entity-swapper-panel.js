@@ -265,10 +265,15 @@ class EntitySwapperPanel extends HTMLElement {
         let activeIdx = -1;
 
         const showList = () => {
-            const val = input.value.toLowerCase();
+            const val = input.value.toLowerCase().trim();
             const entities = this._getEntityList();
-            const filtered = val
-                ? entities.filter((e) => e.toLowerCase().includes(val)).slice(0, 50)
+            const words = val.split(/\s+/).filter(Boolean);
+            const filtered = words.length > 0
+                ? entities.filter((eid) => {
+                      const friendly = (this._hass && this._hass.states[eid] && this._hass.states[eid].attributes.friendly_name || "").toLowerCase();
+                      const haystack = eid.toLowerCase() + " " + friendly;
+                      return words.every((w) => haystack.includes(w));
+                  }).slice(0, 50)
                 : entities.slice(0, 50);
             list.innerHTML = "";
             activeIdx = -1;
@@ -310,10 +315,14 @@ class EntitySwapperPanel extends HTMLElement {
                 items[activeIdx].scrollIntoView({ block: "nearest" });
             } else if (e.key === "Enter" && activeIdx >= 0) {
                 e.preventDefault();
-                const eid = this._getEntityList().filter(
-                    (en) => en.toLowerCase().includes(input.value.toLowerCase())
-                )[activeIdx];
-                if (eid) { input.value = eid; onSelect(eid); }
+                const val = input.value.toLowerCase().trim();
+                const words = val.split(/\s+/).filter(Boolean);
+                const match = this._getEntityList().filter((eid) => {
+                    const friendly = (this._hass && this._hass.states[eid] && this._hass.states[eid].attributes.friendly_name || "").toLowerCase();
+                    const haystack = eid.toLowerCase() + " " + friendly;
+                    return words.every((w) => haystack.includes(w));
+                })[activeIdx];
+                if (match) { input.value = match; onSelect(match); }
                 list.classList.remove("open");
             } else if (e.key === "Escape") {
                 list.classList.remove("open");
