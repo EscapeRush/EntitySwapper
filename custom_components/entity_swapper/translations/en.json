@@ -1,0 +1,13 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Entity Swapper",
+                "description": "Install Entity Swapper to add a sidebar panel for swapping entity IDs."
+            }
+        },
+        "abort": {
+            "already_configured": "Entity Swapper is already configured."
+        }
+    }
+}

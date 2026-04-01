@@ -1,0 +1,10 @@
+{
+    "domain": "entity_swapper",
+    "name": "Entity Swapper",
+    "codeowners": [],
+    "config_flow": true,
+    "documentation": "https://github.com/vincentcolignon/EntitySwapper",
+    "version": "1.0.0",
+    "requirements": [],
+    "dependencies": ["frontend"]
+}

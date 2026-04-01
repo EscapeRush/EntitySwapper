@@ -1,0 +1,13 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "title": "Entity Swapper",
+                "description": "Installer Entity Swapper pour ajouter un panneau dans la barre latérale permettant d'échanger les identifiants d'entités."
+            }
+        },
+        "abort": {
+            "already_configured": "Entity Swapper est déjà configuré."
+        }
+    }
+}
