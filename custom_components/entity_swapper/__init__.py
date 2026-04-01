@@ -1,7 +1,10 @@
 """Entity Swapper - Swap entity IDs in Home Assistant."""
 
+import json
 import logging
 import os
+import time
+import uuid
 
 import voluptuous as vol
 
@@ -20,6 +23,29 @@ from .const import DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend")
+HISTORY_FILE = "entity_swapper_history.json"
+
+
+def _history_path(hass: HomeAssistant) -> str:
+    """Return the path to the history JSON file."""
+    return os.path.join(hass.config.config_dir, HISTORY_FILE)
+
+
+def _load_history(hass: HomeAssistant) -> list:
+    path = _history_path(hass)
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _save_history(hass: HomeAssistant, history: list) -> None:
+    path = _history_path(hass)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -52,8 +78,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         require_admin=True,
     )
 
-    # Register websocket command
+    # Register websocket commands
     websocket_api.async_register_command(hass, ws_swap_entities)
+    websocket_api.async_register_command(hass, ws_swap_history)
+    websocket_api.async_register_command(hass, ws_swap_revert)
 
     return True
 
@@ -195,6 +223,18 @@ async def ws_swap_entities(
         )
         return
 
+    # Save to history
+    record = {
+        "id": str(uuid.uuid4()),
+        "timestamp": time.time(),
+        "original_entity_id": old_entity_id,
+        "new_device_original_id": new_entity_id,
+        "old_renamed_to": final_old_id,
+    }
+    history = _load_history(hass)
+    history.insert(0, record)
+    _save_history(hass, history)
+
     connection.send_result(
         msg["id"],
         {
@@ -205,4 +245,96 @@ async def ws_swap_entities(
                 "old_renamed_to": final_old_id,
             },
         },
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "entity_swapper/history"}
+)
+@websocket_api.async_response
+async def ws_swap_history(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Return swap history."""
+    connection.send_result(msg["id"], _load_history(hass))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "entity_swapper/revert",
+        vol.Required("swap_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_swap_revert(
+    hass: HomeAssistant,
+    connection: websocket_api.ActiveConnection,
+    msg: dict,
+) -> None:
+    """Revert a swap from history."""
+    swap_id = msg["swap_id"]
+    history = _load_history(hass)
+    record = next((r for r in history if r["id"] == swap_id), None)
+
+    if not record:
+        connection.send_error(msg["id"], "not_found", "Swap introuvable dans l'historique.")
+        return
+
+    registry = er.async_get(hass)
+    original_id = record["original_entity_id"]
+    old_renamed_to = record["old_renamed_to"]
+    steps = []
+
+    # Step 1: current holder of original_id → temp
+    current_holder = registry.async_get(original_id)
+    if not current_holder:
+        connection.send_error(
+            msg["id"], "not_found",
+            f"L'entit\u00e9 '{original_id}' n'existe plus dans le registre."
+        )
+        return
+
+    temp_id = _find_available_id(registry, original_id, "revert_temp")
+    try:
+        registry.async_update_entity(original_id, new_entity_id=temp_id)
+        steps.append({"action": f"{original_id}  \u2192  {temp_id}", "status": "success", "detail": "Entit\u00e9 actuelle d\u00e9plac\u00e9e temporairement"})
+    except Exception as exc:
+        connection.send_error(msg["id"], "rename_failed", f"Impossible de d\u00e9placer '{original_id}' : {exc}")
+        return
+
+    # Step 2: old_renamed_to → original_id (restore old entity)
+    old_entry = registry.async_get(old_renamed_to)
+    if old_entry:
+        try:
+            registry.async_update_entity(old_renamed_to, new_entity_id=original_id)
+            steps.append({"action": f"{old_renamed_to}  \u2192  {original_id}", "status": "success", "detail": "Ancienne entit\u00e9 restaur\u00e9e"})
+        except Exception as exc:
+            # Rollback step 1
+            try:
+                registry.async_update_entity(temp_id, new_entity_id=original_id)
+            except Exception:
+                pass
+            connection.send_error(msg["id"], "rename_failed", f"Impossible de restaurer '{old_renamed_to}' : {exc}")
+            return
+    else:
+        steps.append({"action": f"{old_renamed_to} introuvable", "status": "warning", "detail": "L'ancienne entit\u00e9 n'existe plus, seul le nouveau dispositif est remis \u00e0 son ID d'origine"})
+
+    # Step 3: temp → new_device_original_id (restore new device to its original name)
+    new_orig = record["new_device_original_id"]
+    target_id = new_orig if not registry.async_get(new_orig) else _find_available_id(registry, new_orig, "restored")
+    try:
+        registry.async_update_entity(temp_id, new_entity_id=target_id)
+        steps.append({"action": f"{temp_id}  \u2192  {target_id}", "status": "success", "detail": "Nouveau dispositif remis \u00e0 son ID d'origine"})
+    except Exception as exc:
+        steps.append({"action": f"{temp_id}  \u2192  {target_id}", "status": "warning", "detail": f"\u00c9chec : {exc}"})
+
+    # Remove from history
+    history = [r for r in history if r["id"] != swap_id]
+    _save_history(hass, history)
+
+    connection.send_result(
+        msg["id"],
+        {"success": True, "steps": steps},
     )

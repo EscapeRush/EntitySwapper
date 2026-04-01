@@ -23,6 +23,8 @@ class EntitySwapperPanel extends LitElement {
             _newEntityId: { type: String },
             _loading: { type: Boolean },
             _result: { type: Object },
+            _history: { type: Array },
+            _revertingId: { type: String },
         };
     }
 
@@ -32,6 +34,8 @@ class EntitySwapperPanel extends LitElement {
         this._newEntityId = "";
         this._loading = false;
         this._result = null;
+        this._history = [];
+        this._revertingId = null;
     }
 
     static get styles() {
@@ -160,6 +164,78 @@ class EntitySwapperPanel extends LitElement {
             }
             .summary.ok  { background: rgba(76,175,80,0.1); color: #2e7d32; }
             .summary.fail { background: rgba(244,67,54,0.1); color: #c62828; }
+
+            /* History */
+            .history {
+                margin-top: 36px;
+                border-top: 1px solid var(--divider-color, #e0e0e0);
+                padding-top: 28px;
+            }
+            .history-title {
+                font-size: 13px;
+                font-weight: 500;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: var(--secondary-text-color, #727272);
+                margin: 0 0 16px;
+            }
+            .history-empty {
+                font-size: 13px;
+                color: var(--secondary-text-color, #727272);
+                text-align: center;
+                padding: 12px 0;
+            }
+            .history-item {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                padding: 10px 12px;
+                border-radius: 10px;
+                background: var(--primary-background-color, #fafafa);
+                margin-bottom: 8px;
+            }
+            .history-item:last-child { margin-bottom: 0; }
+            .history-info {
+                flex: 1;
+                min-width: 0;
+            }
+            .history-entities {
+                font-family: "Roboto Mono", "SF Mono", Consolas, monospace;
+                font-size: 12.5px;
+                color: var(--primary-text-color, #212121);
+                word-break: break-all;
+            }
+            .history-date {
+                font-size: 11px;
+                color: var(--secondary-text-color, #999);
+                margin-top: 3px;
+            }
+            .history-delete {
+                background: none;
+                border: none;
+                cursor: pointer;
+                padding: 6px;
+                border-radius: 8px;
+                color: var(--secondary-text-color, #999);
+                transition: color 0.15s, background 0.15s;
+                flex-shrink: 0;
+                display: flex;
+                align-items: center;
+            }
+            .history-delete:hover {
+                color: #f44336;
+                background: rgba(244, 67, 54, 0.08);
+            }
+            .history-delete[disabled] {
+                opacity: 0.3;
+                cursor: not-allowed;
+            }
+            .history-delete svg {
+                width: 18px;
+                height: 18px;
+                fill: currentColor;
+            }
+
             @media (max-width: 560px) {
                 .row { flex-direction: column; gap: 4px; }
                 .arrow { margin-top: 0; transform: rotate(90deg); }
@@ -204,6 +280,7 @@ class EntitySwapperPanel extends LitElement {
                     @click=${this._doSwap}
                 >${this._loading ? "\u2026" : "GO"}</button>
                 ${this._result ? this._renderResult() : ""}
+                ${this._renderHistory()}
             </div>
         `;
     }
@@ -239,6 +316,54 @@ class EntitySwapperPanel extends LitElement {
         `;
     }
 
+    _renderHistory() {
+        return html`
+            <div class="history">
+                <p class="history-title">Historique des swaps</p>
+                ${this._history.length === 0
+                    ? html`<div class="history-empty">Aucun swap enregistr\u00e9</div>`
+                    : this._history.map((item) => {
+                          const d = new Date(item.timestamp * 1000);
+                          const dateStr = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" })
+                              + " \u00e0 " + d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+                          return html`
+                              <div class="history-item">
+                                  <div class="history-info">
+                                      <div class="history-entities">
+                                          ${item.original_entity_id}
+                                          \u2190 ${item.new_device_original_id}
+                                      </div>
+                                      <div class="history-date">${dateStr}</div>
+                                  </div>
+                                  <button
+                                      class="history-delete"
+                                      title="Annuler ce swap"
+                                      ?disabled=${this._revertingId === item.id}
+                                      @click=${() => this._doRevert(item.id)}
+                                  >
+                                      <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                                  </button>
+                              </div>
+                          `;
+                      })
+                }
+            </div>
+        `;
+    }
+
+    connectedCallback() {
+        super.connectedCallback();
+        this._loadHistory();
+    }
+
+    async _loadHistory() {
+        try {
+            this._history = await this.hass.callWS({ type: "entity_swapper/history" });
+        } catch (_) {
+            this._history = [];
+        }
+    }
+
     async _doSwap() {
         if (!this._oldEntityId || !this._newEntityId || this._loading) return;
         this._loading = true;
@@ -250,10 +375,27 @@ class EntitySwapperPanel extends LitElement {
                 new_entity_id: this._newEntityId,
             });
             this._result = result;
+            if (result.success) await this._loadHistory();
         } catch (err) {
             this._result = { success: false, steps: [], error: err.message || String(err) };
         } finally {
             this._loading = false;
+        }
+    }
+
+    async _doRevert(swapId) {
+        this._revertingId = swapId;
+        try {
+            const result = await this.hass.callWS({
+                type: "entity_swapper/revert",
+                swap_id: swapId,
+            });
+            this._result = result;
+            await this._loadHistory();
+        } catch (err) {
+            this._result = { success: false, steps: [], error: err.message || String(err) };
+        } finally {
+            this._revertingId = null;
         }
     }
 }
